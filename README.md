@@ -43,6 +43,7 @@
     * Spawn
     * Resource
     * Clock
+    * Resource
 * Примитивы MPP из cats-effect:
     * Supervisor
     * Ref
