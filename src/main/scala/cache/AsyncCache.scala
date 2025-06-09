@@ -9,7 +9,7 @@ import cats.syntax.all._
 
 import scala.collection.immutable.{HashMap, HashSet}
 
-case class AsyncCache[F[_]: Ref.Make: Monad: Console, K, V, E](
+case class AsyncCache[F[_]: Monad: Console, K, V, E](
     maxSize: Long,
     ttl: FiniteDuration,
     rttl: FiniteDuration, // refreshAfterWriterTtl
@@ -28,7 +28,7 @@ case class AsyncCache[F[_]: Ref.Make: Monad: Console, K, V, E](
         if (gettingTime - time > ttl.toMillis) syncLoadValueAndReturn(key)
         else if (gettingTime - time > rttl.toMillis) asyncLoadValue(key) >> Monad[F].pure(Right(v))
         else storage.put(key, v) >> Monad[F].pure(Right(v))
-      case None => load(key)
+      case None => syncLoadValueAndReturn(key)
     }
   }
 

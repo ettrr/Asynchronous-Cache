@@ -10,7 +10,8 @@ lazy val root = (project in file("."))
       "org.typelevel" %% "cats-core"     % "2.9.0",
       "tf.tofu"       %% "tofu-core-ce3" % "0.11.1",
       "org.scalatest" %% "scalatest"     % "3.2.15" % Test,
-      "org.scalamock" %% "scalamock"     % "5.2.0"  % Test
+      "org.scalamock" %% "scalamock"     % "5.2.0"  % Test,
+      "org.typelevel" %% "cats-effect-testkit" % "3.4.8" % Test
     ),
     scalacOptions ++= Seq(
       "-deprecation",
