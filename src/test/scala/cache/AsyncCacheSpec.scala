@@ -3,7 +3,7 @@ package cache
 import cats.effect.std.Supervisor
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import cats.effect.{IO, Ref, Resource}
+import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.effect.unsafe.implicits.global
 
 import scala.concurrent.duration._
@@ -19,20 +19,24 @@ class AsyncCacheSpec extends AnyFlatSpec with Matchers {
       load: String => IO[Either[E, Int]] = (_: String) => IO.pure(Right(0)),
       initialData: Map[String, (Int, Long)] = Map.empty
   ): Resource[IO, AsyncCache[IO, String, Int, E]] = {
+
+    type A = Either[E, Int]
+
     for {
       supervisor <- Supervisor[IO](await = true)
-      loadLocks  <- Resource.eval(Ref.of[IO, Set[String]](Set.empty))
       data <- Resource.eval(Ref.of[IO, HashMap[String, (Int, Long)]](HashMap.from(initialData)))
       timeStamp <- Resource.eval(Ref.of[IO, HashMap[Long, String]](HashMap.empty))
-      storage   <- Resource.pure(Storage(maxSize, data, timeStamp))
+      keysForLoad <- Resource.eval(
+        Ref.of[IO, HashMap[String, (Boolean, Deferred[IO, IO[A]])]](HashMap.empty)
+      )
+      loader          = Loader(load, keysForLoad)
+      resourceManager = AsyncResourceManager(maxSize, data, timeStamp, loader)
     } yield new AsyncCache[IO, String, Int, E](
       maxSize,
       ttl,
       rttl,
-      load,
-      storage,
-      supervisor,
-      loadLocks
+      resourceManager,
+      supervisor
     )
   }
 
@@ -139,13 +143,72 @@ class AsyncCacheSpec extends AnyFlatSpec with Matchers {
 
     val result = cacheResource.use { cache =>
       for {
-        _ <- cache.get("key1")
         tasks <- (1 to 10).toList.parTraverse(_ => cache.get("key1"))
-        _ <- IO.pure(println(tasks))
+        _     <- IO.pure(println(tasks))
         result = tasks.forall(_.contains(1)) shouldBe true
       } yield result
     }
 
     result.unsafeRunSync()
+  }
+
+  it should "handle concurrent puts and gets correctly" in {
+    val cacheResource = createTestCache(maxSize = 100)
+
+    val result = cacheResource.use { cache =>
+      val writes = (1 to 100).toList.parTraverse { i =>
+        cache.put(s"key$i", i)
+      }
+
+      val reads = (1 to 100).toList.parTraverse { i =>
+        cache.get(s"key$i").map(_.getOrElse(-1))
+      }
+
+      for {
+        _      <- writes
+        values <- reads
+      } yield values.sum
+    }
+
+    result.unsafeRunSync() shouldBe (1 to 100).sum
+  }
+
+  it should "respect TTL under concurrent access" in {
+    val currentTime = System.currentTimeMillis()
+    val oldTime     = currentTime - 2.minutes.toMillis
+    val cacheResource =
+      createTestCache(ttl = 1.minute, initialData = Map("expired" -> (99, oldTime)))
+
+    val result = cacheResource.use { cache =>
+      val getters = (1 to 10).toList.parTraverse { _ =>
+        cache.get("expired")
+      }
+
+      getters.map(_.forall(_.contains(0)))
+    }
+
+    result.unsafeRunSync() shouldBe true
+  }
+
+  it should "reload value only once when TTL expires under concurrent access" in {
+    var loadCount = 0
+    val load: String => IO[Either[String, Int]] = _ => IO {
+      loadCount += 1
+      Right(loadCount)
+    }.delayBy(100.millis)
+
+    val oldTime = System.currentTimeMillis() - 2.minutes.toMillis
+    val cacheResource = createTestCache(
+      ttl = 1.minute,
+      initialData = Map("expired" -> (0, oldTime)),
+      load = load
+    )
+
+    val result = cacheResource.use { cache =>
+      (1 to 10).toList.parTraverse(_ => cache.get("expired"))
+        .map(_.forall(_.contains(1)))
+    }
+
+    result.unsafeRunSync() shouldBe true
   }
 }

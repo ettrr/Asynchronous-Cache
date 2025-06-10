@@ -7,14 +7,17 @@ import cats.syntax.all._
 
 import scala.collection.immutable.HashMap
 
-case class Storage[F[_]: Ref.Make: Monad: Console, K, V](
+case class AsyncResourceManager[F[_]: Monad: Console, K, V, E](
     maxSize: Long,
-    storage: Ref[F, HashMap[K, (V, Long)]],
-    timeStamp: Ref[F, HashMap[Long, K]]
+    private val storage: Ref[F, HashMap[K, (V, Long)]],
+    private val timeStamp: Ref[F, HashMap[Long, K]],
+    private val loader: Loader[F, K, Either[E, V]]
 ) {
 
   private val context = Monad[F]
   private val console = Console[F]
+
+  def asyncLoad(key: K): F[Either[E, V]] = loader.asyncLoad(key)
 
   def put(key: K, value: V): F[Unit] = {
     val timeAdd = System.currentTimeMillis()
@@ -27,7 +30,8 @@ case class Storage[F[_]: Ref.Make: Monad: Console, K, V](
           val minTime = time.keySet.min
           time.get(minTime) match {
             case Some(kMT) =>
-              deleteFromTimeStamp(key, minTime) >> deleteFromRef(storage, if (inside) key else kMT)
+              val keyForDelete = if (inside) key else kMT
+              deleteFromTimeStamp(key, minTime) >> deleteFromRef(storage, keyForDelete) >> loader.deleteKey(keyForDelete)
             case None => context.unit
           }
         } else context.unit
